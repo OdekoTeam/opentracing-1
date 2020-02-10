@@ -1,0 +1,32 @@
+_include: !include '../share/package.yaml'
+
+name: opentracing-datadog
+
+synopsis: OpenTracing reporter for Datadog agent
+
+<<: *common
+<<: *version
+<<: *options
+
+library:
+  exposed-modules:
+    - OpenTracing.DataDog
+
+  dependencies:
+    - aeson
+    - base
+    - exceptions
+    - http-client
+    - lens
+    - opentracing
+    - text
+    - time
+    - time-compat
+    - unordered-containers
+    - servant
+    - servant-client
+    - containers
+    - random
+    - bytestring
+    - base64-bytestring
+    - hashtables
