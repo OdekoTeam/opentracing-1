@@ -111,7 +111,7 @@ instance ToJSON DataDogSpan where
     [ "trace_id" .= traceId ddSpan
     , "span_id" .= spanId ddSpan
     , "name" .= name ddSpan
---    , "resource" .= resource ddSpan
+    , "resource" .= resource ddSpan
     , "service" .= service ddSpan
     , "start" .= (floor @_ @Integer $ 10^9 * start ddSpan)
     , "duration" .= (floor @_ @Integer $ 10^9 * duration ddSpan)
