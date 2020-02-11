@@ -8,7 +8,16 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StrictData #-}
 
-module OpenTracing.DataDog where
+module OpenTracing.DataDog
+  ( datadogReporter
+  , defaultHTTPDataDog
+  , DataDogSpan(..)
+  , DataDogTraceEnv(..)
+  , DataDog(..)
+  , traceCollecting
+  , defaultDataDogClientEnv
+  , httpDataDog
+  ) where
 
 import Control.Concurrent
 import Control.Lens ((^.), (^?), (&))
@@ -68,6 +77,20 @@ defaultDataDogClientEnv mgr = mkClientEnv mgr BaseUrl
 defaultHTTPDataDog :: MonadIO m => Manager -> m (DataDog m)
 defaultHTTPDataDog = traceCollecting . httpDataDog . defaultDataDogClientEnv
 
+-- | The DataDog API accepts a a list of traces, where a trace
+-- is itself a list of spans. Even though spans all have a unique
+-- trace ID, datadog will display multiple traces if spans with
+-- the same trace ID are submitted via multiple API calls, or
+-- are otherwise not part of a single list of spans.
+--
+-- On the contrary to that, opentracing reports spans as they
+-- finish, with no grouping of spans that share the same trace
+-- ID.
+--
+-- In order to keep things neat and tidy in DataDog, each span
+-- recorded will be stored in a hash map with the other spans
+-- in the trace until the root span is finished, and then they
+-- will all be sent to DataDog together.
 traceCollecting :: MonadIO m => DataDog m -> m (DataDog m)
 traceCollecting dd = do
   table :: HT.BasicHashTable Word64 [DataDogSpan] <- liftIO HT.new
