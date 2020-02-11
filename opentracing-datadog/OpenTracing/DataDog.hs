@@ -10,6 +10,9 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module OpenTracing.DataDog
   ( datadogReporter
@@ -21,10 +24,12 @@ module OpenTracing.DataDog
   , defaultDataDogClientEnv
   , httpDataDog
   , pattern DataDogResourceKey
+  , pattern DataDogResource
+  , _DataDogResource
   ) where
 
 import Control.Concurrent
-import Control.Lens ((^.), (&))
+import Control.Lens ((^.), (&), Prism', prism', preview, review)
 import Control.Monad
 import Control.Monad.IO.Class
 import Data.Aeson ((.=), ToJSON(..), Value, object)
@@ -184,6 +189,15 @@ instance ToJSON DataDogSpan where
 
 pattern DataDogResourceKey :: Text
 pattern DataDogResourceKey = "resource.name"
+
+_DataDogResource :: Prism' Tag Text
+_DataDogResource = prism' ((DataDogResourceKey,) . StringT) $ \case
+  (k, StringT v) | k == DataDogResourceKey -> Just v
+  _ -> Nothing
+
+pattern DataDogResource :: Text -> Tag
+pattern DataDogResource v <- (preview _DataDogResource -> Just v) where
+  DataDogResource v = review _DataDogResource v
 
 -- | An opentracing reporter that hands spans off to a datadog agent
 -- after massaging the data into the appropriate form.

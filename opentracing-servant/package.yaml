@@ -1,0 +1,21 @@
+_include: !include '../share/package.yaml'
+
+name: opentracing-servant
+
+synopsis: OpenTracing integration for Servant servers + clients
+
+<<: *common
+<<: *version
+<<: *options
+
+library:
+  exposed-modules: OpenTracing.Servant
+
+  dependencies:
+    - base
+    - opentracing
+    - servant
+    - servant-client
+    - servant-server
+    - text
+    - wai
