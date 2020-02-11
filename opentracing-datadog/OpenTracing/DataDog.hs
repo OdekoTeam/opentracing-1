@@ -9,6 +9,7 @@
 {-# LANGUAGE StrictData #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 module OpenTracing.DataDog
   ( datadogReporter
@@ -19,6 +20,7 @@ module OpenTracing.DataDog
   , traceCollecting
   , defaultDataDogClientEnv
   , httpDataDog
+  , pattern DataDogResourceKey
   ) where
 
 import Control.Concurrent
@@ -133,7 +135,6 @@ httpDataDog env = DataDog
 -- standard.
 data DataDogTraceEnv = DataDogTraceEnv
   { datadogService :: Text
-  , datadogResource :: Text
   }
 
 newtype Nanoseconds = Nanoseconds Integer
@@ -158,7 +159,7 @@ data DataDogSpan = DataDogSpan
   { traceId :: Word64
   , spanId :: Word64
   , name :: Text
-  , resource :: Text
+  , resource :: Maybe Text
   , service :: Text
   , start :: Nanoseconds
   , duration :: Nanoseconds
@@ -181,6 +182,9 @@ instance ToJSON DataDogSpan where
     , "error" .= errorPresent ddSpan
     ]
 
+pattern DataDogResourceKey :: Text
+pattern DataDogResourceKey = "resource.name"
+
 -- | An opentracing reporter that hands spans off to a datadog agent
 -- after massaging the data into the appropriate form.
 datadogReporter
@@ -194,7 +198,10 @@ datadogReporter DataDog{sendTraces} env otSpan = sendTraces $
     { traceId = traceIdLo . ctxTraceID $ otSpan ^. spanContext
     , spanId = ctxSpanID $ otSpan ^. spanContext
     , name = otSpan ^. spanOperation
-    , resource = datadogResource env
+    , resource = otSpan ^. spanTags
+        & fromTags
+        & HM.lookup DataDogResourceKey
+        & fmap tagValToText
     , service = datadogService env
     , start = toNanoseconds . utcTimeToPOSIXSeconds $ otSpan ^. spanStart
     , duration = toNanoseconds $ otSpan ^. spanDuration
@@ -203,6 +210,7 @@ datadogReporter DataDog{sendTraces} env otSpan = sendTraces $
         & fromTags
         & fmap tagValToText
         & appendErrorLog
+        & removeResourceName
     , errorPresent = otSpan ^. spanTags
         & getTagReify _Error ErrorKey
         & fromMaybe False
@@ -211,8 +219,13 @@ datadogReporter DataDog{sendTraces} env otSpan = sendTraces $
   ]
 
   where
+    removeResourceName = HM.delete DataDogResourceKey
 
-    appendErrorLog = HM.alter (\present -> getFirst $ First present <> firstErrorLog) "error.msg"
+    appendErrorLog hmap = hmap
+      & HM.alter (\present -> getFirst $ First present <> firstErrorLog) "error.msg"
+
+
+
 
     firstErrorLog = otSpan ^. spanLogs
       & fmap (^. logFields)
