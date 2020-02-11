@@ -7,6 +7,8 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StrictData #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE DerivingStrategies #-}
 
 module OpenTracing.DataDog
   ( datadogReporter
@@ -20,7 +22,7 @@ module OpenTracing.DataDog
   ) where
 
 import Control.Concurrent
-import Control.Lens ((^.), (^?), (&))
+import Control.Lens ((^.), (&))
 import Control.Monad
 import Control.Monad.IO.Class
 import Data.Aeson ((.=), ToJSON(..), Value, object)
@@ -30,7 +32,6 @@ import qualified Data.HashMap.Strict as HM
 import qualified Data.HashTable.IO as HT
 import Data.Maybe
 import Data.Monoid
-import Data.List
 import qualified Data.List.NonEmpty as NE
 import Data.Proxy
 import Data.Text (Text)
@@ -45,12 +46,15 @@ import Network.HTTP.Client (Manager)
 import OpenTracing
 import Servant.API
 import Servant.Client
-import System.Random
 
+-- | An abstract interface to the DataDog agent
 data DataDog m = DataDog
   { sendTraces :: [DataDogSpan] -> m ()
   }
 
+-- | The HTTP API that the DataDog agent responds to
+--
+-- See https://docs.datadoghq.com/api/?lang=bash#tracing for more info
 type DataDogAPI = "v0.4"
   :> "traces"
   :> ReqBody '[JSON] [[DataDogSpan]] :> Put '[JSON] Value
@@ -64,6 +68,9 @@ putTraces
   -> IO (Either ServantError Value)
 putTraces = flip $ runClientM . client dataDogAPI
 
+-- | A ClientEnv for the DataDog HTTP API with default values
+-- assuming that the agent is running on the same host
+-- (which it should be)
 defaultDataDogClientEnv
   :: Manager
   -> ClientEnv
@@ -74,6 +81,8 @@ defaultDataDogClientEnv mgr = mkClientEnv mgr BaseUrl
   , baseUrlPath = ""
   }
 
+-- | A good default implementation of the DataDog interface to use
+-- when sending trace information to DataDog.
 defaultHTTPDataDog :: MonadIO m => Manager -> m (DataDog m)
 defaultHTTPDataDog = traceCollecting . httpDataDog . defaultDataDogClientEnv
 
@@ -100,7 +109,7 @@ traceCollecting dd = do
           mGroup <- liftIO $ HT.lookup table (traceId s)
           case mGroup of
             Nothing -> liftIO $ HT.insert table (traceId s) [s]
-            Just group -> liftIO $ HT.insert table (traceId s) (s : group)
+            Just spanGroup -> liftIO $ HT.insert table (traceId s) (s : spanGroup)
         forM_ spans $ \s -> do
           when (parentId s == Nothing) $ do
             mGroup <- liftIO $ HT.lookup table (traceId s)
@@ -108,32 +117,54 @@ traceCollecting dd = do
               Nothing -> return ()
                          -- ^ this shouldn't happen since we
                          -- just inserted
-              Just group -> sendTraces dd group
+              Just spanGroup -> sendTraces dd spanGroup
             liftIO $ HT.delete table (traceId s)
     }
 
+-- | A DataDog implementation that will deliver spans to the DataDog
+-- agent asynchronously via HTTP
 httpDataDog :: MonadIO m => ClientEnv -> DataDog m
 httpDataDog env = DataDog
   { sendTraces = \spans -> void . liftIO . forkIO . void $
       putTraces env [spans]
   }
 
+-- | Additional info that DataDog desires for a span that is not part of the opentracing
+-- standard.
 data DataDogTraceEnv = DataDogTraceEnv
   { datadogService :: Text
   , datadogResource :: Text
   }
 
+newtype Nanoseconds = Nanoseconds Integer
+  deriving newtype (Eq, Show, ToJSON)
+
+-- | Smart constructor for converting NominalDiffTime into nanoseconds.
+toNanoseconds :: NominalDiffTime -> Nanoseconds
+toNanoseconds diffTime = Nanoseconds . floor @_ @Integer $ 10^nano * diffTime
+  where
+    nano :: Int
+    nano = 9
+
+newtype ErrorPresent = ErrorPresent Bool
+  deriving newtype (Eq, Show)
+
+instance ToJSON ErrorPresent where
+  toJSON (ErrorPresent True) = toJSON (1 :: Int)
+  toJSON _ = toJSON $ Nothing @Int
+
+-- | The representation DataDog expects for a single span
 data DataDogSpan = DataDogSpan
   { traceId :: Word64
   , spanId :: Word64
   , name :: Text
   , resource :: Text
   , service :: Text
-  , start :: NominalDiffTime
-  , duration :: NominalDiffTime
+  , start :: Nanoseconds
+  , duration :: Nanoseconds
   , parentId :: Maybe Word64
   , meta :: HashMap Text Text
-  , errorPresent :: Bool
+  , errorPresent :: ErrorPresent
   } deriving (Generic, Show)
 
 instance ToJSON DataDogSpan where
@@ -143,15 +174,15 @@ instance ToJSON DataDogSpan where
     , "name" .= name ddSpan
     , "resource" .= resource ddSpan
     , "service" .= service ddSpan
-    , "start" .= (floor @_ @Integer $ 10^9 * start ddSpan)
-    , "duration" .= (floor @_ @Integer $ 10^9 * duration ddSpan)
+    , "start" .= start ddSpan
+    , "duration" .= duration ddSpan
     , "parent_id" .= parentId ddSpan
     , "meta" .= meta ddSpan
-    , "error" .= case errorPresent ddSpan of
-        True -> Just (1 :: Int)
-        _ -> Nothing
+    , "error" .= errorPresent ddSpan
     ]
 
+-- | An opentracing reporter that hands spans off to a datadog agent
+-- after massaging the data into the appropriate form.
 datadogReporter
   :: forall m
    . DataDog m
@@ -165,12 +196,17 @@ datadogReporter DataDog{sendTraces} env otSpan = sendTraces $
     , name = otSpan ^. spanOperation
     , resource = datadogResource env
     , service = datadogService env
-    , start = utcTimeToPOSIXSeconds $ otSpan ^. spanStart
-    , duration = otSpan ^. spanDuration
+    , start = toNanoseconds . utcTimeToPOSIXSeconds $ otSpan ^. spanStart
+    , duration = toNanoseconds $ otSpan ^. spanDuration
     , parentId = ctxParentSpanID $ otSpan ^. spanContext
-    , meta = (fmap tagValToText . fromTags $ otSpan ^. spanTags)
+    , meta = otSpan ^. spanTags
+        & fromTags
+        & fmap tagValToText
         & appendErrorLog
-    , errorPresent = fromMaybe False . getTagReify _Error ErrorKey  $ otSpan ^. spanTags
+    , errorPresent = otSpan ^. spanTags
+        & getTagReify _Error ErrorKey
+        & fromMaybe False
+        & ErrorPresent
     }
   ]
 
