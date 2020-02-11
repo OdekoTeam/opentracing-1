@@ -6,17 +6,23 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE StrictData #-}
 
 module OpenTracing.DataDog where
 
 import Control.Concurrent
-import Control.Lens ((^.))
+import Control.Lens ((^.), (^?), (&))
 import Control.Monad
 import Control.Monad.IO.Class
-import Data.Aeson
+import Data.Aeson ((.=), ToJSON(..), Value, object)
 import qualified Data.ByteString.Base64.Lazy as B64
 import Data.HashMap.Strict (HashMap)
+import qualified Data.HashMap.Strict as HM
 import qualified Data.HashTable.IO as HT
+import Data.Maybe
+import Data.Monoid
+import Data.List
+import qualified Data.List.NonEmpty as NE
 import Data.Proxy
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -104,6 +110,7 @@ data DataDogSpan = DataDogSpan
   , duration :: NominalDiffTime
   , parentId :: Maybe Word64
   , meta :: HashMap Text Text
+  , errorPresent :: Bool
   } deriving (Generic, Show)
 
 instance ToJSON DataDogSpan where
@@ -117,6 +124,9 @@ instance ToJSON DataDogSpan where
     , "duration" .= (floor @_ @Integer $ 10^9 * duration ddSpan)
     , "parent_id" .= parentId ddSpan
     , "meta" .= meta ddSpan
+    , "error" .= case errorPresent ddSpan of
+        True -> Just (1 :: Int)
+        _ -> Nothing
     ]
 
 datadogReporter
@@ -135,9 +145,26 @@ datadogReporter DataDog{sendTraces} env otSpan = sendTraces $
     , start = utcTimeToPOSIXSeconds $ otSpan ^. spanStart
     , duration = otSpan ^. spanDuration
     , parentId = ctxParentSpanID $ otSpan ^. spanContext
-    , meta = fmap tagValToText . fromTags $ otSpan ^. spanTags
+    , meta = (fmap tagValToText . fromTags $ otSpan ^. spanTags)
+        & appendErrorLog
+    , errorPresent = fromMaybe False . getTagReify _Error ErrorKey  $ otSpan ^. spanTags
     }
   ]
+
+  where
+
+    appendErrorLog = HM.alter (\present -> getFirst $ First present <> firstErrorLog) "error.msg"
+
+    firstErrorLog = otSpan ^. spanLogs
+      & fmap (^. logFields)
+      & fmap NE.toList
+      & mconcat
+      & mapMaybe (\field -> case field of
+                     ErrObj e -> Just $ tshow e
+                     _ -> Nothing
+                 )
+      & listToMaybe
+      & First
 
 tshow :: Show a => a -> Text
 tshow = T.pack . show
