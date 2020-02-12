@@ -11,8 +11,8 @@
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE TupleSections #-}
 
 module OpenTracing.DataDog
   ( datadogReporter
@@ -26,6 +26,7 @@ module OpenTracing.DataDog
   , pattern DataDogResourceKey
   , pattern DataDogResource
   , _DataDogResource
+  , datadogPropagation
   ) where
 
 import Control.Concurrent
@@ -53,6 +54,7 @@ import Network.HTTP.Client (Manager)
 import OpenTracing
 import Servant.API
 import Servant.Client
+import Text.Read
 
 -- | An abstract interface to the DataDog agent
 data DataDog m = DataDog
@@ -91,7 +93,7 @@ defaultDataDogClientEnv mgr = mkClientEnv mgr BaseUrl
 -- | A good default implementation of the DataDog interface to use
 -- when sending trace information to DataDog.
 defaultHTTPDataDog :: MonadIO m => Manager -> m (DataDog m)
-defaultHTTPDataDog = traceCollecting . httpDataDog . defaultDataDogClientEnv
+defaultHTTPDataDog = return . httpDataDog . defaultDataDogClientEnv
 
 -- | The DataDog API accepts a a list of traces, where a trace
 -- is itself a list of spans. Even though spans all have a unique
@@ -190,14 +192,14 @@ instance ToJSON DataDogSpan where
 pattern DataDogResourceKey :: Text
 pattern DataDogResourceKey = "resource.name"
 
+pattern DataDogResource :: Text -> Tag
+pattern DataDogResource v <- (preview _DataDogResource -> Just v) where
+  DataDogResource v = review _DataDogResource v
+
 _DataDogResource :: Prism' Tag Text
 _DataDogResource = prism' ((DataDogResourceKey,) . StringT) $ \case
   (k, StringT v) | k == DataDogResourceKey -> Just v
   _ -> Nothing
-
-pattern DataDogResource :: Text -> Tag
-pattern DataDogResource v <- (preview _DataDogResource -> Just v) where
-  DataDogResource v = review _DataDogResource v
 
 -- | An opentracing reporter that hands spans off to a datadog agent
 -- after massaging the data into the appropriate form.
@@ -238,19 +240,57 @@ datadogReporter DataDog{sendTraces} env otSpan = sendTraces $
     appendErrorLog hmap = hmap
       & HM.alter (\present -> getFirst $ First present <> firstErrorLog) "error.msg"
 
-
-
-
     firstErrorLog = otSpan ^. spanLogs
       & fmap (^. logFields)
       & fmap NE.toList
       & mconcat
-      & mapMaybe (\field -> case field of
-                     ErrObj e -> Just $ tshow e
-                     _ -> Nothing
-                 )
+      & (mapMaybe $ \case
+          ErrObj e -> Just $ tshow e
+          _ -> Nothing
+        )
       & listToMaybe
       & First
+
+
+datadogPropagation :: Propagation '[OpenTracing.Headers]
+datadogPropagation = Carrier _DataDogHeaders :& RNil
+
+_DataDogHeaders :: Prism' OpenTracing.Headers SpanContext
+_DataDogHeaders = _HeadersTextMap . _DataDogTextMap
+
+_DataDogTextMap :: Prism' TextMap SpanContext
+_DataDogTextMap = prism' fromCtx toCtx
+  where
+    fromCtx :: SpanContext -> TextMap
+    fromCtx ctx = HM.fromList
+      [("x-datadog-trace-id", tshow . traceIdLo $ ctxTraceID ctx)
+      ,("x-datadog-parent-id", tshow $ ctxSpanID ctx)
+      ,("x-datadog-sampling-priority", fromSampled $ ctx ^. ctxSampled)
+      ]
+
+    fromSampled Sampled = "1"
+    fromSampled _ = "0"
+
+    toSampled "0" = Just NotSampled
+    toSampled "1" = Just Sampled
+    toSampled _ = Nothing
+
+
+    toCtx :: TextMap -> Maybe SpanContext
+    toCtx m = SpanContext
+      <$> (TraceID Nothing
+            <$> (HM.lookup "x-datadog-trace-id" m >>=
+                 readMaybe . T.unpack
+                )
+          )
+      <*> (HM.lookup "x-datadog-parent-id" m >>=
+           readMaybe . T.unpack
+          )
+      <*> pure Nothing
+      <*> (HM.lookup "x-datadog-sampling-priority"m >>=
+           toSampled
+          )
+      <*> pure HM.empty
 
 tshow :: Show a => a -> Text
 tshow = T.pack . show
