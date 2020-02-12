@@ -14,7 +14,6 @@ library:
   dependencies:
     - base
     - opentracing
-    - opentracing-datadog
     - servant
     - servant-client
     - servant-server

@@ -27,7 +27,6 @@ import           Network.Wai
 import           OpenTracing
 import qualified OpenTracing.Propagation as Propagation
 import qualified OpenTracing.Tracer      as Tracer
-import OpenTracing.DataDog (pattern DataDogResource)
 import           Prelude                 hiding (span)
 
 
@@ -64,17 +63,26 @@ type TracedApplication = ActiveSpan -> Application
 parentSpanKey :: IO (Key ActiveSpan)
 parentSpanKey = V.newKey
 
+data OpenTracingEnv api p = OpenTracingEnv
+  { opentracingAPIProxy :: Proxy api
+  , opentracingActiveSpanKey :: Key ActiveSpan
+  , opentracingTracer :: Tracer
+  , opentracingPropagation :: Propagation p
+  , opentracingResourceTag :: Maybe (Text -> Tag)
+  }
+
 opentracing
     :: (HasCarrier Headers p, ParsePath api)
-    => Proxy api
-    -> Key ActiveSpan
-    -> Tracer
-    -> Propagation        p
+    => OpenTracingEnv api p
     -> TracedApplication
     -> Application
-opentracing api vaultKey t p app req respond = do
-    let ctx = Propagation.extract p (requestHeaders req)
-    let opt = let name = "servant.request"
+opentracing env app req respond = do
+    let propagation = opentracingPropagation env
+        api = opentracingAPIProxy env
+        tracer = opentracingTracer env
+        vaultKey = opentracingActiveSpanKey env
+        ctx = Propagation.extract propagation (requestHeaders req)
+        opt = let name = "servant.request"
                   resource = parsePathDescription api $ pathInfo req
                   refs = (\x -> set refPropagated x mempty)
                        . maybeToList . fmap ChildOf $ ctx
@@ -85,11 +93,11 @@ opentracing api vaultKey t p app req respond = do
                        , PeerAddress (Text.pack (show (remoteHost req))) -- not so great
                        , SpanKind    RPCServer
                        ] ++ catMaybes
-                       [ DataDogResource <$> resource
+                       [ opentracingResourceTag env <*> resource
                        ])
                 $ spanOpts name refs
 
-    Tracer.traced_ t opt $ \span -> do
+    Tracer.traced_ tracer opt $ \span -> do
       let oldVault = vault req
           newVault = V.insert vaultKey span oldVault
           newReq = req { vault = newVault }
