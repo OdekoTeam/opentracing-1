@@ -11,7 +11,7 @@
 module OpenTracing.Servant where
 
 import Control.Applicative
-import Servant (FromHttpApiData(..), Capture, (:>), Verb, Proxy(..), (:<|>), ReqBody')
+import Servant (FromHttpApiData(..), Capture, (:>), Verb, Proxy(..), (:<|>), ReqBody', Description, QueryParam', QueryParams)
 import Data.Text (Text)
 import qualified Data.Text as T
 import GHC.TypeLits
@@ -57,6 +57,16 @@ instance (ParsePath l, ParsePath r) => ParsePath (l :<|> r) where
 
 instance (ParsePath api) => ParsePath (ReqBody' x y z :> api) where
   parsePathDescription _ xs = parsePathDescription (Proxy @api) xs
+
+instance (ParsePath api) => ParsePath (Description t :> api) where
+  parsePathDescription _ xs = parsePathDescription (Proxy @api) xs
+
+instance (ParsePath api) => ParsePath (QueryParam' x y z :> api) where
+  parsePathDescription _ xs = parsePathDescription (Proxy @api) xs
+
+instance (ParsePath api) => ParsePath (QueryParams y z :> api) where
+  parsePathDescription _ xs = parsePathDescription (Proxy @api) xs
+
 
 type TracedApplication = ActiveSpan -> Application
 
