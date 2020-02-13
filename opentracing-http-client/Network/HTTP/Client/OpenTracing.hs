@@ -1,5 +1,6 @@
 {-# LANGUAGE FlexibleContexts      #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE OverloadedStrings     #-}
 
 module Network.HTTP.Client.OpenTracing
     ( httpTraced
@@ -71,7 +72,7 @@ httpTraced' t p refs req mgr f = do
                   , PeerAddress (decodeUtf8 (host req))
                   , SpanKind    RPCClient
                   ]
-            $ spanOpts (decodeUtf8 (path req)) refs
+            $ spanOpts "http.request" refs
 
     Tracer.traced t opt $ \span ->
         let mgr' = modMgr span

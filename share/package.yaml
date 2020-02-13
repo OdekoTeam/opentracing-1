@@ -12,7 +12,7 @@
     - README.md
 
 - &version
-  version: 0.1.0.0
+  version: 0.1.0.1
 
 - &options
   ghc-options:

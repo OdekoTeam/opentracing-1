@@ -295,9 +295,6 @@ _DataDogTextMap = prism' fromCtx toCtx
           )
       <*> pure HM.empty
 
-
-
-
 tshow :: Show a => a -> Text
 tshow = T.pack . show
 
