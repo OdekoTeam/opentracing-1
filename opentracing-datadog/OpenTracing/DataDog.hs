@@ -27,6 +27,9 @@ module OpenTracing.DataDog
   , pattern DataDogResource
   , _DataDogResource
   , datadogPropagation
+  , mkClientEnv
+  , BaseUrl(..)
+  , Scheme(..)
   ) where
 
 import Control.Concurrent
